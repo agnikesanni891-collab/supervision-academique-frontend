@@ -1,0 +1,297 @@
+import { useState, useEffect } from "react";
+import axios from "axios";
+
+// ── Couleurs par catégorie ─────────────────────────────────────────────────────
+const CATEGORIE_CONFIG = {
+  redaction:    { label: "Rédaction",    couleur: "blue"  },
+  methodologie: { label: "Méthodologie", couleur: "purple"},
+  validation:   { label: "Validation",   couleur: "green" },
+  general:      { label: "Général",      couleur: "gray"  },
+};
+
+const COULEUR_CLASSES = {
+  blue:   { badge: "bg-blue-100 text-blue-700",   barre: "bg-blue-500"   },
+  purple: { badge: "bg-purple-100 text-purple-700", barre: "bg-purple-500" },
+  green:  { badge: "bg-green-100 text-green-700",  barre: "bg-green-500"  },
+  gray:   { badge: "bg-gray-100 text-gray-600",    barre: "bg-gray-400"   },
+};
+
+// ── Composant principal ────────────────────────────────────────────────────────
+export default function MemoireChecklist({ idMemoire, role }) {
+  const [items, setItems]             = useState([]);
+  const [progression, setProgression] = useState({ total: 0, completes: 0, taux: 0 });
+  const [parCategorie, setParCategorie] = useState({});
+  const [loading, setLoading]         = useState(true);
+  const [ajoutOpen, setAjoutOpen]     = useState(false);
+  const [nouveauLibelle, setNouveauLibelle] = useState("");
+  const [nouvelleCategorie, setNouvelleCategorie] = useState("general");
+  const [saving, setSaving]           = useState(null); // id_item en cours de sauvegarde
+
+  const peutModifier = role === "encadrant" || role === "admin_ecole";
+
+  // ── Chargement initial ───────────────────────────────────────────────────────
+  useEffect(() => {
+    fetchChecklist();
+  }, [idMemoire]);
+
+  const fetchChecklist = async () => {
+    setLoading(true);
+    try {
+      const res = await axios.get(`/api/memoires/${idMemoire}/checklist`);
+      setItems(res.data.items);
+      setProgression(res.data.progression);
+      setParCategorie(res.data.par_categorie);
+    } catch (err) {
+      console.error("Erreur chargement checklist", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── Cocher / décocher une étape ──────────────────────────────────────────────
+  const toggleItem = async (item) => {
+    if (!peutModifier) return;
+    setSaving(item.id_item);
+    try {
+      const res = await axios.patch(
+        `/api/memoires/${idMemoire}/checklist/${item.id_item}/toggle`,
+        { est_complete: !item.est_complete }
+      );
+      // Mise à jour locale immédiate (optimistic UI)
+      setItems(prev =>
+        prev.map(i => i.id_item === item.id_item ? res.data.item : i)
+      );
+      setProgression(res.data.progression);
+    } catch (err) {
+      console.error("Erreur toggle", err);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  // ── Ajouter une étape personnalisée ─────────────────────────────────────────
+  const ajouterEtape = async (e) => {
+    e.preventDefault();
+    if (!nouveauLibelle.trim()) return;
+    try {
+      await axios.post(`/api/memoires/${idMemoire}/checklist`, {
+        libelle:   nouveauLibelle,
+        categorie: nouvelleCategorie,
+      });
+      setNouveauLibelle("");
+      setAjoutOpen(false);
+      fetchChecklist();
+    } catch (err) {
+      console.error("Erreur ajout étape", err);
+    }
+  };
+
+  // ── Supprimer une étape ──────────────────────────────────────────────────────
+  const supprimerEtape = async (id_item) => {
+    if (!window.confirm("Supprimer cette étape ?")) return;
+    try {
+      await axios.delete(`/api/memoires/${idMemoire}/checklist/${id_item}`);
+      fetchChecklist();
+    } catch (err) {
+      console.error("Erreur suppression", err);
+    }
+  };
+
+  // ── Affichage loading ────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-10 text-gray-400">
+        <svg className="animate-spin h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+        </svg>
+        Chargement de la checklist...
+      </div>
+    );
+  }
+
+  // ── Couleur de la barre selon le taux ────────────────────────────────────────
+  const couleurBarre =
+    progression.taux >= 80 ? "bg-green-500" :
+    progression.taux >= 50 ? "bg-yellow-400" :
+    "bg-red-400";
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
+
+      {/* ── En-tête + barre de progression globale ── */}
+      <div className="mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-lg font-semibold text-gray-800">
+            📋 Checklist de progression
+          </h2>
+          <span className="text-2xl font-bold text-gray-700">
+            {progression.taux}%
+          </span>
+        </div>
+
+        {/* Barre globale */}
+        <div className="w-full bg-gray-100 rounded-full h-4 overflow-hidden">
+          <div
+            className={`h-4 rounded-full transition-all duration-500 ${couleurBarre}`}
+            style={{ width: `${progression.taux}%` }}
+          />
+        </div>
+        <p className="text-sm text-gray-500 mt-1">
+          {progression.completes} étape{progression.completes > 1 ? "s" : ""} complète{progression.completes > 1 ? "s" : ""}
+          {" "}sur {progression.total}
+        </p>
+      </div>
+
+      {/* ── Étapes groupées par catégorie ── */}
+      <div className="space-y-6">
+        {Object.entries(parCategorie).map(([cat, data]) => {
+          const config = CATEGORIE_CONFIG[cat] || CATEGORIE_CONFIG.general;
+          const classes = COULEUR_CLASSES[config.couleur];
+
+          return (
+            <div key={cat}>
+              {/* Header catégorie */}
+              <div className="flex items-center justify-between mb-2">
+                <span className={`text-xs font-semibold px-2 py-1 rounded-full ${classes.badge}`}>
+                  {config.label}
+                </span>
+                <span className="text-xs text-gray-400">
+                  {data.completes}/{data.total}
+                </span>
+              </div>
+
+              {/* Mini barre catégorie */}
+              <div className="w-full bg-gray-100 rounded-full h-1.5 mb-3">
+                <div
+                  className={`h-1.5 rounded-full ${classes.barre}`}
+                  style={{ width: `${data.total > 0 ? (data.completes / data.total) * 100 : 0}%` }}
+                />
+              </div>
+
+              {/* Liste des items */}
+              <ul className="space-y-2">
+                {data.items.map((item) => (
+                  <li
+                    key={item.id_item}
+                    className={`flex items-start gap-3 p-3 rounded-xl border transition-all
+                      ${item.est_complete
+                        ? "bg-green-50 border-green-100"
+                        : "bg-gray-50 border-gray-100 hover:border-gray-200"
+                      }`}
+                  >
+                    {/* Checkbox */}
+                    <button
+                      onClick={() => toggleItem(item)}
+                      disabled={!peutModifier || saving === item.id_item}
+                      className={`mt-0.5 flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors
+                        ${item.est_complete
+                          ? "bg-green-500 border-green-500 text-white"
+                          : "border-gray-300 hover:border-green-400"
+                        }
+                        ${!peutModifier ? "cursor-default opacity-70" : "cursor-pointer"}
+                      `}
+                    >
+                      {saving === item.id_item ? (
+                        <svg className="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                        </svg>
+                      ) : item.est_complete ? (
+                        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      ) : null}
+                    </button>
+
+                    {/* Texte */}
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-sm ${item.est_complete ? "line-through text-gray-400" : "text-gray-700"}`}>
+                        {item.libelle}
+                      </p>
+                      {item.est_complete && item.date_completion && (
+                        <p className="text-xs text-green-500 mt-0.5">
+                          ✓ Complété le {new Date(item.date_completion).toLocaleDateString("fr-FR")}
+                        </p>
+                      )}
+                      {item.commentaire && (
+                        <p className="text-xs text-gray-400 italic mt-0.5">
+                          💬 {item.commentaire}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Bouton supprimer (encadrant/admin seulement) */}
+                    {peutModifier && (
+                      <button
+                        onClick={() => supprimerEtape(item.id_item)}
+                        className="text-gray-300 hover:text-red-400 transition-colors flex-shrink-0"
+                        title="Supprimer cette étape"
+                      >
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Formulaire ajout étape personnalisée ── */}
+      {peutModifier && (
+        <div className="mt-6 pt-4 border-t border-gray-100">
+          {ajoutOpen ? (
+            <form onSubmit={ajouterEtape} className="space-y-3">
+              <input
+                type="text"
+                value={nouveauLibelle}
+                onChange={e => setNouveauLibelle(e.target.value)}
+                placeholder="Libellé de la nouvelle étape..."
+                className="w-full border border-gray-200 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-300"
+                autoFocus
+              />
+              <div className="flex gap-2">
+                <select
+                  value={nouvelleCategorie}
+                  onChange={e => setNouvelleCategorie(e.target.value)}
+                  className="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none"
+                >
+                  {Object.entries(CATEGORIE_CONFIG).map(([key, val]) => (
+                    <option key={key} value={key}>{val.label}</option>
+                  ))}
+                </select>
+                <button
+                  type="submit"
+                  className="flex-1 bg-green-500 text-white rounded-xl py-2 text-sm font-medium hover:bg-green-600 transition"
+                >
+                  Ajouter
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAjoutOpen(false)}
+                  className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700"
+                >
+                  Annuler
+                </button>
+              </div>
+            </form>
+          ) : (
+            <button
+              onClick={() => setAjoutOpen(true)}
+              className="w-full flex items-center justify-center gap-2 py-2 text-sm text-gray-400 border border-dashed border-gray-200 rounded-xl hover:border-green-300 hover:text-green-500 transition"
+            >
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              Ajouter une étape personnalisée
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
